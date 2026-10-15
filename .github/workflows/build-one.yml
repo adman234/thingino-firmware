@@ -1,0 +1,68 @@
+name: build-one
+on:
+  push:
+    branches:
+      - build-master
+  workflow_dispatch:
+    inputs:
+      camera:
+        description: 'Camera config to build'
+        required: false
+        default: 'wyze_cam3_t31x_gc2053_rtl8189ftv'
+
+env:
+  BR2_DL_DIR: ~/dl
+  FORCE_UNSAFE_CONFIGURE: 1
+  TERM: linux
+  TZ: UTC
+
+jobs:
+  build:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    container:
+      image: ghcr.io/themactep/thingino-builder-image:latest
+      options: --user root --volume /var/run/docker.sock:/var/run/docker.sock
+    env:
+      CAMERA: ${{ github.event.inputs.camera || 'wyze_cam3_t31x_gc2053_rtl8189ftv' }}
+    steps:
+      - name: Setup gh workspace to container
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Use GNU coreutils install (workaround for uutils bug)
+        run: update-alternatives --install /usr/bin/install install /usr/bin/gnuinstall 100 || true
+
+      - name: Install Docker CLI (fallback until image is rebuilt)
+        run: |
+          if ! command -v docker &>/dev/null; then
+            apt-get update && apt-get install -y --no-install-recommends docker-cli
+          fi
+
+      - name: Checkout repository source
+        uses: actions/checkout@v5
+        with:
+          submodules: 'true'
+          fetch-depth: "1"
+
+      - name: Restore buildroot-dl-cache from image
+        run: |
+          mkdir -p ~/dl
+          docker pull ghcr.io/themactep/thingino-dl:latest
+          DL_CID=$(docker create ghcr.io/themactep/thingino-dl:latest)
+          docker cp "$DL_CID:/dl" ~/dl
+          docker rm "$DL_CID"
+
+      - name: Build firmware
+        run: BOARD=${CAMERA} make fast WORKFLOW=1
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: thingino-${{ env.CAMERA }}
+          path: |
+            output/**/images/thingino-*.bin
+            output/**/images/thingino-*.bin.sha256sum
+          if-no-files-found: error
